@@ -24,9 +24,11 @@
 */
 package com.dtolabs.rundeck.core.execution.workflow.steps.node;
 
+import com.dtolabs.rundeck.plugins.step.FileExtensionGeneratedScript;
 import com.dtolabs.rundeck.plugins.step.GeneratedScript;
 
 import java.io.File;
+import java.util.Map;
 
 
 /**
@@ -34,8 +36,9 @@ import java.io.File;
  *
  * @author Greg Schueler <a href="mailto:greg@dtosolutions.com">greg@dtosolutions.com</a>
  */
-interface FileBasedGeneratedScript extends GeneratedScript{
+interface FileBasedGeneratedScript extends FileExtensionGeneratedScript{
     public File getScriptFile();
     public String getScriptInterpreter();
     public boolean isInterpreterArgsQuoted();
+    public Map<String, String> getConfigData();
 }

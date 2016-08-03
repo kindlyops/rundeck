@@ -124,6 +124,7 @@ log4j={
             debug 'org.apache.commons.httpclient'
             info 'grails.app.services.rundeck.services.ProjectManagerService'
             off 'h2database'
+            //info 'grails.app.utils.rundeck.codecs.SanitizedHTMLCodec'
         }
     }
 }
@@ -131,12 +132,16 @@ log4j={
 environments{
     development{
         feature.incubator.'*'=true
+        rundeck.feature.'*'.enabled=true
     }
     production{
         //disable feature toggling
         feature.incubator.feature = false
         //enable takeover schedule feature
         feature.incubator.jobs = true
+
+        //enable dynamic workflow step descriptions in GUI by default
+        rundeck.feature.workflowDynamicStepSummaryGUI.enabled = true
     }
 }
 
@@ -163,6 +168,8 @@ rundeck.security.authorization.containerPrincipal.enabled=true
 rundeck.security.authorization.container.enabled=true
 rundeck.security.authorization.preauthenticated.enabled=false
 rundeck.security.authorization.preauthenticated.attributeName=null
+rundeck.security.authorization.preauthenticated.userNameHeader=null
+rundeck.security.authorization.preauthenticated.userRolesHeader=null
 rundeck.security.authorization.preauthenticated.delimiter=','
 
 rundeck.web.metrics.servlets.metrics.enabled = true

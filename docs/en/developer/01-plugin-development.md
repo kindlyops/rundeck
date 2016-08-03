@@ -349,7 +349,8 @@ Required provider entries:
 
 For `ResourceModelSource` service, this additional entry is required:
 
-* `resource-format` - Must be the name of one of the supported [Resource Model Document Formats].
+* `resource-format` - Must be the name of one of the supported 
+[Resource Model Document Formats](../plugins-user-guide/resource-model-source-plugins.html#resource-model-document-formats).
 
 Optional entries:
 
@@ -362,6 +363,12 @@ Optional entries:
      `${interpreter} "${file} ${arg1} ${arg2}..."`. If false,
     the execution will be done by passing the file and args as separate arguments:
      `${interpreter} ${file} ${arg1} ${arg2}...`
+
+* `use-original-extension`: (`true/false`, default `true`), whether to force the 
+  remotely copied script to have the same file extension as the original specified by `script-file`.
+  (Available for `RemoteScriptNodeStep` only.)
+* `script-file-extension`: A file extension to use for the remotely copied script.
+  (Available for `RemoteScriptNodeStep` only.)
 * `mergeEnvironment` - boolean, if true (default for `rundeckPluginVersion: 1.1+`), when the script
   is executed the Environment variables from the Rundeck server
   will be merged with the context environment variables provided to the script.
@@ -587,6 +594,7 @@ Available rendering option keys:
 * `displayType`, values:
     - `SINGLE_LINE` - display input as a single text field.
     - `MULTI_LINE` - display input as a multi-line text area.
+    - `CODE` - display input as a multi-line text area with syntax highlighting
     - `PASSWORD` - display input as a password field
     - `STATIC_TEXT` - display static text without an input field, using the default value as the text
 * `instance-scope-node-attribute`
@@ -613,3 +621,8 @@ Available rendering option keys:
   * `grouping` allowed value: `secondary`, indicates that the specified `groupName` should be shown in a
   collapsed state if no input values in that group have been set. If no `groupName` is set, then the field
   will be displayed under a group with a heading of "More".
+  * `codeSyntaxMode` - if displayType is `CODE`, name of a [ACE editor mode][acejs] supported by Rundeck. One of: `batchfile`, `diff`, `dockerfile`, `golang`, `groovy`, `html`, `java`, `javscript`, `json`, `markdown`, `perl`, `php`, `powershell`, `properties`, `python`, `ruby`, `sh`, `sql`, `xml`, `yaml`.
+  * `codeSyntaxSelectable` - if displayType is `CODE`, `true/false`: if true, show a select box for choosing from the available syntax highlighting modes.
+
+  [acejs]: https://ace.c9.io
+

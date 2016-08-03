@@ -45,6 +45,7 @@ import rundeck.services.logging.LoggingThreshold
 import javax.servlet.http.HttpServletRequest
 import javax.servlet.http.HttpServletResponse
 import javax.servlet.http.HttpSession
+import java.nio.charset.Charset
 import java.text.MessageFormat
 import java.text.SimpleDateFormat
 import java.util.regex.Pattern
@@ -861,9 +862,10 @@ class ExecutionService implements ApplicationContextAware, StepExecutor, NodeSte
                 }
                 loadSecureOptionStorageDefaults(scheduledExecution, extraParamsExposed, extraParams, authContext,true)
             }
+            String inputCharset=frameworkService.getDefaultInputCharsetForProject(execution.project)
 
             StepExecutionContext executioncontext = createContext(execution, null,framework, authContext,
-                    execution.user, jobcontext, multiListener, null,extraParams, extraParamsExposed)
+                    execution.user, jobcontext, multiListener, null,extraParams, extraParamsExposed,inputCharset)
 
             //ExecutionService handles Job reference steps
             final cis = StepExecutionService.getInstanceForFramework(framework);
@@ -882,10 +884,10 @@ class ExecutionService implements ApplicationContextAware, StepExecutor, NodeSte
             //install custom outputstreams for System.out and System.err for this thread and any child threads
             //output will be sent to loghandler instead.
             sysThreadBoundOut.installThreadStream(
-                    loggingService.createLogOutputStream(loghandler, LogLevel.NORMAL, executionListener, logOutFlusher)
+                    loggingService.createLogOutputStream(loghandler, LogLevel.NORMAL, executionListener, logOutFlusher, inputCharset?Charset.forName(inputCharset):null)
             );
             sysThreadBoundErr.installThreadStream(
-                    loggingService.createLogOutputStream(loghandler, LogLevel.ERROR, executionListener, logErrFlusher)
+                    loggingService.createLogOutputStream(loghandler, LogLevel.ERROR, executionListener, logErrFlusher, inputCharset?Charset.forName(inputCharset):null)
             );
             //create service object for the framework and listener
             Thread thread = new WorkflowExecutionServiceThread(framework.getWorkflowExecutionService(),item, executioncontext)
@@ -1156,7 +1158,20 @@ class ExecutionService implements ApplicationContextAware, StepExecutor, NodeSte
     /**
      * Return an StepExecutionItem instance for the given workflow Execution, suitable for the ExecutionService layer
      */
-    public StepExecutionContext createContext(ExecutionContext execMap, StepExecutionContext origContext, Framework framework, AuthContext authContext, String userName = null, Map<String, String> jobcontext, ExecutionListener listener, String[] inputargs=null, Map extraParams=null, Map extraParamsExposed=null) {
+    public StepExecutionContext createContext(
+            ExecutionContext execMap,
+            StepExecutionContext origContext,
+            Framework framework,
+            AuthContext authContext,
+            String userName = null,
+            Map<String, String> jobcontext,
+            ExecutionListener listener,
+            String[] inputargs = null,
+            Map extraParams = null,
+            Map extraParamsExposed = null,
+            String charsetEncoding = null
+    )
+    {
         if (!userName) {
             userName=execMap.user
         }
@@ -1173,6 +1188,11 @@ class ExecutionService implements ApplicationContextAware, StepExecutor, NodeSte
             datacontext.put("secureOption",extraParamsExposed.clone())
         }
         datacontext.put("job",jobcontext?jobcontext:new HashMap<String,String>())
+
+        // Put globals in context.
+        Map<String, String> globals = frameworkService.getProjectGlobals(execMap.project);
+        datacontext.put("globals", globals ? globals : new HashMap<>());
+
 
         NodesSelector nodeselector
         int threadCount=1
@@ -1227,6 +1247,7 @@ class ExecutionService implements ApplicationContextAware, StepExecutor, NodeSte
             .nodeSelector(nodeselector)
             .nodes(nodeSet)
             .loglevel(logLevelIntValue(execMap.loglevel))
+            .charsetEncoding(charsetEncoding)
             .dataContext(datacontext)
             .privateDataContext(privatecontext)
             .executionListener(listener)
@@ -1371,12 +1392,9 @@ class ExecutionService implements ApplicationContextAware, StepExecutor, NodeSte
             }
                 //delete all reports
             ExecReport.findAllByJcExecId(e.id.toString()).each { rpt ->
-                rpt.delete(flush: true)
+                rpt.delete()
             }
-            //delete all storage requests
-            LogFileStorageRequest.findAllByExecution(e).each { req ->
-                req.delete(flush: true)
-            }
+
             List<File> files = []
             def execs = []
             //aggregate all files to delete
@@ -1499,7 +1517,44 @@ class ExecutionService implements ApplicationContextAware, StepExecutor, NodeSte
         }
         return execution
     }
+    /**
+     * Expand date format strings in the string, in the form
+     * ${DATE:FORMAT} or ${DATE[+-]#:FORMAT}
+     * @param input
+     * @return string with dates expanded, or original
+     */
+    def expandDateStrings(String input, Date dateStarted){
+        if(input =~ /\$\{DATE((?:[-+]\d+)?:.*?)\}/) {
+            def newstr = input
 
+            try {
+                newstr = input.replaceAll(/\$\{DATE((?:[-+]\d+)?:.*?)\}/) { all, tstamp ->
+                    if (tstamp.lastIndexOf(":") == -1) {
+                        return all
+                    }
+                    final operator = tstamp.substring(0, tstamp.lastIndexOf(":"))
+                    final fdate = tstamp.substring(tstamp.lastIndexOf(":") + 1)
+                    def formatter = new SimpleDateFormat(fdate)
+                    if (operator == '') {
+                        formatter.format(dateStarted)
+                    } else {
+                        final number = operator as int
+                        final newDate = dateStarted + number
+                        formatter.format(newDate)
+                    }
+                }
+
+            } catch (IllegalArgumentException e) {
+                log.warn(e)
+            } catch (NumberFormatException e) {
+                log.warn(e)
+            }
+
+
+            return newstr
+        }
+        return input
+    }
     /**
      * creates an execution with the parameters, and evaluates dynamic buildstamp
      */
@@ -1512,18 +1567,8 @@ class ExecutionService implements ApplicationContextAware, StepExecutor, NodeSte
         def Execution execution = createExecution(props)
         execution.dateStarted = new Date()
 
-        if(execution.argString =~ /\$\{DATE:(.*)\}/){
-
-            def newstr = execution.argString
-            try{
-                newstr = execution.argString.replaceAll(/\$\{DATE:(.*)\}/,{ all,tstamp ->
-                    new SimpleDateFormat(tstamp).format(execution.dateStarted)
-                })
-            }catch(IllegalArgumentException e){
-                log.warn(e)
-            }
-
-
+        def newstr = expandDateStrings(execution.argString, execution.dateStarted)
+        if(newstr!=execution.argString){
             execution.argString=newstr
         }
 
@@ -1592,7 +1637,7 @@ class ExecutionService implements ApplicationContextAware, StepExecutor, NodeSte
 
             Map allowedOptions = input.subMap(['loglevel', 'argString', 'option','_replaceNodeFilters', 'filter', 'retryAttempt']).findAll { it.value != null }
             allowedOptions.putAll(input.findAll { it.key.startsWith('option.') || it.key.startsWith('nodeInclude') || it.key.startsWith('nodeExclude') }.findAll { it.value != null })
-            def Execution e = createExecution(scheduledExecution, authContext, allowedOptions,attempt>0,prevId)
+            def Execution e = createExecution(scheduledExecution, authContext, user, allowedOptions,attempt>0,prevId)
             def timeout = 0
             def eid = scheduledExecutionService.scheduleTempJob(
                     scheduledExecution,
@@ -1614,12 +1659,18 @@ class ExecutionService implements ApplicationContextAware, StepExecutor, NodeSte
     }
     /**
      * Create execution
-     * @param se
-     * @param user
+     * @param se job
+     * @param authContext auth context
+     * @param runAsUser owner of execution
      * @param input , map of input overrides, allowed keys: loglevel: String, option.*:String, argString: String, node(Include|Exclude).*: String, _replaceNodeFilters:true/false, filter: String, retryAttempt: Integer
-     * @return
+     * @return execution
      */
-    Execution int_createExecution(ScheduledExecution se, UserAndRolesAuthContext authContext, Map input){
+    Execution int_createExecution(
+            ScheduledExecution se,
+            UserAndRolesAuthContext authContext,
+            String runAsUser,
+            Map input
+    ) {
         def props = [:]
 
         se = ScheduledExecution.get(se.id)
@@ -1644,6 +1695,9 @@ class ExecutionService implements ApplicationContextAware, StepExecutor, NodeSte
             props.put(k,se[k])
         }
         props.user = authContext.username
+        if (runAsUser) {
+            props.user = runAsUser
+        }
         if (input && 'true' == input['_replaceNodeFilters']) {
             //remove all existing node filters to replace with input filters
             props = props.findAll {!(it.key =~ /^(filter|node(Include|Exclude).*)$/)}
@@ -1691,20 +1745,12 @@ class ExecutionService implements ApplicationContextAware, StepExecutor, NodeSte
         Execution execution = createExecution(props)
         execution.dateStarted = new Date()
 
-        if (execution.argString =~ /\$\{DATE:(.*)\}/) {
+        def newstr = expandDateStrings(execution.argString, execution.dateStarted)
 
-            def newstr = execution.argString
-            try {
-                newstr = execution.argString.replaceAll(/\$\{DATE:(.*)\}/, { all, tstamp ->
-                    new SimpleDateFormat(tstamp).format(execution.dateStarted)
-                })
-            } catch (IllegalArgumentException e) {
-                log.warn(e)
-            }
-
-
-            execution.argString = newstr
+        if(newstr!=execution.argString){
+            execution.argString=newstr
         }
+
         execution.scheduledExecution=se
         if (workflow && !workflow.save(flush:true)) {
             execution.workflow.errors.allErrors.each { log.error(it.toString()) }
@@ -1728,7 +1774,16 @@ class ExecutionService implements ApplicationContextAware, StepExecutor, NodeSte
      * @return
      * @throws ExecutionServiceException
      */
-    def Execution createExecution(ScheduledExecution se, UserAndRolesAuthContext authContext, Map input = [:], boolean retry=false, long prevId=-1) throws ExecutionServiceException {
+    def Execution createExecution(
+            ScheduledExecution se,
+            UserAndRolesAuthContext authContext,
+            String runAsUser,
+            Map input = [:],
+            boolean retry=false,
+            long prevId=-1
+    )
+            throws ExecutionServiceException
+    {
         if (!se.multipleExecutions ) {
             synchronized (this) {
                 //find any currently running executions for this job, and if so, throw exception
@@ -1740,10 +1795,10 @@ class ExecutionService implements ApplicationContextAware, StepExecutor, NodeSte
                 if (found && !(retry && prevId && found.size()==1 && found[0].id==prevId)) {
                     throw new ExecutionServiceException('Job "' + se.jobName + '" [' + se.extid + '] is currently being executed (execution [' + found.id + '])','conflict')
                 }
-                return int_createExecution(se,authContext,input)
+                return int_createExecution(se,authContext,runAsUser,input)
             }
         }else{
-            return int_createExecution(se,authContext,input)
+            return int_createExecution(se,authContext,runAsUser,input)
         }
     }
 
@@ -1893,16 +1948,31 @@ class ExecutionService implements ApplicationContextAware, StepExecutor, NodeSte
 
                 if (opt.required && !optparams[opt.name]) {
 
-
-                    if(opt.defaultStoragePath && !canReadStoragePassword(
-                            authContext,
-                            opt.defaultStoragePath,
-                            false
-                    )){
-                        invalidOpt opt,lookupMessage("domain.Option.validation.required.storageDefault",[opt.name,opt.defaultStoragePath].toArray())
-                        return
-                    }else if(!opt.defaultStoragePath){
+                    if (!opt.defaultStoragePath) {
                         invalidOpt opt,lookupMessage("domain.Option.validation.required",[opt.name].toArray())
+                        return
+                    }
+                    try {
+                        def canread = canReadStoragePassword(
+                                authContext,
+                                opt.defaultStoragePath,
+                                true
+                        )
+
+                        if (!canread) {
+                            invalidOpt opt, lookupMessage(
+                                    "domain.Option.validation.required.storageDefault",
+                                    [opt.name, opt.defaultStoragePath].toArray()
+                            )
+                            return
+                        }
+                    } catch (ExecutionServiceException e1) {
+
+                        invalidOpt opt, lookupMessage(
+                                "domain.Option.validation.required.storageDefault.reason",
+                                [opt.name, opt.defaultStoragePath, e1.cause.message].toArray()
+
+                        )
                         return
                     }
                 }

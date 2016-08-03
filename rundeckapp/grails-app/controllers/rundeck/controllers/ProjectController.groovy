@@ -11,6 +11,7 @@ import com.dtolabs.rundeck.server.authorization.AuthConstants
 import rundeck.filters.ApiRequestFilters
 import rundeck.services.ApiService
 import rundeck.services.ArchiveOptions
+import com.dtolabs.rundeck.util.JsonUtil
 import rundeck.services.ProjectServiceException
 
 import javax.servlet.http.HttpServletRequest
@@ -516,8 +517,8 @@ class ProjectController extends ControllerBase{
         def project = null
         def description = null
         Map config = null
-
         //parse request format
+        String errormsg=''
         def succeeded = apiService.parseJsonXmlWith(request,response, [
                 xml: { xml ->
                     project = xml?.name[0]?.text()
@@ -528,12 +529,30 @@ class ProjectController extends ControllerBase{
                     }
                 },
                 json: { json ->
-                    project = json?.name?.toString()
-                    description = json?.description?.toString()
-                    config = json?.config
+                    def errors = JsonUtil.validateJson(json,[
+                            '!name':String,
+                            description:String,
+                            config:Map
+                    ])
+                    if (errors) {
+                        errormsg += errors.join("; ")
+                        return
+                    }
+                    project = JsonUtil.jsonNull(json?.name)?.toString()
+                    description = JsonUtil.jsonNull(json?.description)?.toString()
+                    config = JsonUtil.jsonNull(json?.config)
                 }
         ])
         if(!succeeded){
+            return
+        }
+        if (errormsg) {
+            apiService.renderErrorFormat(response, [
+                    status: HttpServletResponse.SC_BAD_REQUEST,
+                    code: "api.error.invalid.request",
+                    args: [errormsg],
+                    format: respFormat
+            ])
             return
         }
         if( description){
@@ -908,30 +927,36 @@ class ProjectController extends ControllerBase{
      * @return
      */
     private def apiProjectAclsGetResource(IRundeckProject project,String projectFilePath,String rmprefix) {
-        def respFormat = apiService.extractResponseFormat(request, response, ['yaml','xml','json','text'],request.format)
+        def respFormat = apiService.extractResponseFormat(request, response, ['yaml','xml','json','text','all'],response.format?:'json')
         if(project.existsFileResource(projectFilePath)){
             if(respFormat in ['yaml','text']){
                 //write directly
                 response.setContentType(respFormat=='yaml'?"application/yaml":'text/plain')
                 project.loadFileResource(projectFilePath,response.outputStream)
                 response.outputStream.close()
-            }else{
+            }else if(respFormat in ['json','xml','all'] ){
                 //render as json/xml with contents as string
                 def baos=new ByteArrayOutputStream()
                 project.loadFileResource(projectFilePath,baos)
                 withFormat{
                     json{
                         render(contentType:'application/json'){
-                            apiService.renderWrappedFileContents(baos.toString(),respFormat,delegate)
+                            apiService.renderWrappedFileContents(baos.toString(),'json',delegate)
                         }
                     }
                     xml{
                         render(contentType: 'application/xml'){
-                            apiService.renderWrappedFileContents(baos.toString(),respFormat,delegate)
+                            apiService.renderWrappedFileContents(baos.toString(),'xml',delegate)
                         }
 
                     }
                 }
+            }else{
+                apiService.renderErrorFormat(response,[
+                        status:HttpServletResponse.SC_NOT_ACCEPTABLE,
+                        code:'api.error.resource.format.unsupported',
+                        args:[respFormat]
+                ])
             }
         }else if(project.existsDirResource(projectFilePath) || projectFilePath==rmprefix){
             //list aclpolicy files in the dir

@@ -42,6 +42,7 @@ if(System.properties['disable.grails.central']) {
 
 grails.plugin.location.webrealms = 'webrealms'
 grails.plugin.location.metricsweb = 'metricsweb'
+grails.plugin.location.authfilter = 'authfilter'
 
 grails.project.dependency.resolution = {
     inherits 'global' // inherit Grails' default dependencies
@@ -96,10 +97,12 @@ grails.project.dependency.resolution = {
                 'commons-codec:commons-codec:1.5',
                 'com.fasterxml.jackson.core:jackson-databind:2.5.3',
                 'com.fasterxml.jackson.core:jackson-annotations:2.5.3',
-                'com.codahale.metrics:metrics-core:3.0.1', 'com.google.guava:guava:15.0',
-                'org.owasp.encoder:encoder:1.1.1', 'org.quartz-scheduler:quartz:2.2.1',
+                'com.codahale.metrics:metrics-core:3.0.1',
+                'com.google.guava:guava:15.0',
+                'org.owasp.encoder:encoder:1.2',
+                'org.quartz-scheduler:quartz:2.2.1',
                 'org.markdownj:markdownj-core:0.4',
-                'com.googlecode.owasp-java-html-sanitizer:owasp-java-html-sanitizer:r239'
+                'com.googlecode.owasp-java-html-sanitizer:owasp-java-html-sanitizer:20160614.1'
 
         compile("org.rundeck:rundeck-core:${rundeckVersion}")
         compile("org.rundeck:rundeck-storage-filesys:${rundeckVersion}")

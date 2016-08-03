@@ -2,7 +2,6 @@ import com.dtolabs.rundeck.app.support.QueueQuery
 import com.dtolabs.rundeck.core.authorization.AuthContext
 import com.dtolabs.rundeck.core.authorization.UserAndRolesAuthContext
 import com.dtolabs.rundeck.core.execution.ExecutionContextImpl
-import com.dtolabs.rundeck.core.storage.StorageTree
 import com.dtolabs.rundeck.server.authorization.AuthConstants
 import com.dtolabs.rundeck.server.plugins.storage.KeyStorageTree
 import grails.test.mixin.Mock
@@ -10,21 +9,8 @@ import grails.test.mixin.TestFor
 import org.rundeck.storage.api.PathUtil
 import org.rundeck.storage.api.StorageException
 import org.springframework.context.MessageSource
-import rundeck.CommandExec
-import rundeck.ExecReport
-import rundeck.Execution
-import rundeck.LogFileStorageRequest
-import rundeck.Option
-import rundeck.ScheduledExecution
-import rundeck.Workflow
-import rundeck.services.ExecutionService
-import rundeck.services.ExecutionServiceException
-import rundeck.services.ExecutionServiceValidationException
-import rundeck.services.FrameworkService
-import rundeck.services.JobStateService
-import rundeck.services.LogFileStorageService
-import rundeck.services.ReportService
-import rundeck.services.StorageService
+import rundeck.*
+import rundeck.services.*
 import spock.lang.Specification
 import spock.lang.Unroll
 
@@ -34,7 +20,27 @@ import spock.lang.Unroll
 @TestFor(ExecutionService)
 @Mock([Execution, ScheduledExecution, Workflow, CommandExec, Option, ExecReport, LogFileStorageRequest])
 class ExecutionServiceSpec extends Specification {
+    @Unroll
+    def "expand date strings"() {
+        given:
+        def cal = new GregorianCalendar(1970, 0, 14, 8, 20, 30)
+        Date thedate = cal.time
 
+        when:
+        def result = service.expandDateStrings(input, thedate)
+
+        then:
+        result == expected
+        where:
+        input                                          | expected
+        ''                                             | ''
+
+        '${DATE:yyyy-MM-dd}'                           | '1970-01-14'
+        '${DATE:yyyy-MM-dd} blah ${DATE:yyyy-MM-dd}'   | '1970-01-14 blah 1970-01-14'
+        '${DATE:yyyy-MM-dd} blah ${DATE+3:yyyy-MM-dd}' | '1970-01-14 blah 1970-01-17'
+        '${DATE-7:yyyy-MM-dd}'                         | '1970-01-07'
+        'invalid ${DATE-asdf7:yyyy-MM-dd}'             | 'invalid ${DATE-asdf7:yyyy-MM-dd}'
+    }
     void "retry execution otherwise running"() {
 
         given:
@@ -74,7 +80,7 @@ class ExecutionServiceSpec extends Specification {
             getUsername()>>'user1'
         }
         when:
-        Execution e2 = service.createExecution(job, authContext, ['extra.option.test': '12'], true, exec2.id)
+        Execution e2 = service.createExecution(job, authContext,null, ['extra.option.test': '12'], true, exec2.id)
 
         then:
         ExecutionServiceException e = thrown()
@@ -114,10 +120,168 @@ class ExecutionServiceSpec extends Specification {
             getUsername()>>'user1'
         }
         when:
-        Execution e2 = service.createExecution(job, authContext, ['extra.option.test': '12'], true, exec.id)
+        Execution e2 = service.createExecution(job, authContext,null, ['extra.option.test': '12'], true, exec.id)
 
         then:
         e2 != null
+    }
+    void "create execution as user"() {
+
+        given:
+        ScheduledExecution job = new ScheduledExecution(
+                jobName: 'blue',
+                project: 'AProject',
+                groupPath: 'some/where',
+                description: 'a job',
+                argString: '-a b -c d',
+                workflow: new Workflow(
+                        keepgoing: true,
+                        commands: [new CommandExec(
+                                [adhocRemoteString: 'test buddy', argString: '-delay 12 -monkey cheese -particle']
+                        )]
+                ),
+                retry: '1'
+        )
+        job.save()
+
+        service.frameworkService = Stub(FrameworkService) {
+            getServerUUID() >> null
+        }
+        def authContext = Mock(UserAndRolesAuthContext){
+            getUsername()>>'user1'
+        }
+        when:
+        Execution e2 = service.createExecution(job, authContext,'testuser', ['extra.option.test': '12'])
+
+        then:
+        e2 != null
+        e2.user=='testuser'
+    }
+
+    void "create execution expand date strings"() {
+
+        given:
+        ScheduledExecution job = new ScheduledExecution(
+                jobName: 'blue',
+                project: 'AProject',
+                groupPath: 'some/where',
+                description: 'a job',
+                argString: argString,
+                workflow: new Workflow(
+                        keepgoing: true,
+                        commands: [new CommandExec(
+                                [adhocRemoteString: 'test buddy', argString: '-delay 12 -monkey cheese -particle']
+                        )]
+                ),
+                retry: '1'
+        )
+        job.save()
+
+        service.frameworkService = Stub(FrameworkService) {
+            getServerUUID() >> null
+        }
+        def authContext = Mock(UserAndRolesAuthContext) {
+            getUsername() >> 'user1'
+        }
+        when:
+        Execution e2 = service.createExecution(
+                job,
+                authContext,
+                null
+        )
+
+        then:
+        e2 != null
+        e2.argString =~ resultPat
+
+        where:
+        argString                                             | resultPat
+        '-opt1 blah -opt2 ${DATE:yyyy-MM-dd}'                 | /-opt1 blah -opt2 \d{4}-\d{2}-\d{2}/
+        '-opt1 ${DATE+1:yyyy-MM-dd} -opt2 ${DATE:yyyy-MM-dd}' | /-opt1 \d{4}-\d{2}-\d{2} -opt2 \d{4}-\d{2}-\d{2}/
+    }
+
+    void "create execution and prep expand date strings"() {
+
+        given:
+        def params = [
+                project    : 'AProject',
+                groupPath  : 'some/where',
+                description: 'a job',
+                argString  : argString,
+                user       : 'bob',
+                workflow   : new Workflow(
+                        keepgoing: true,
+                        commands: [new CommandExec(
+                                [adhocRemoteString: 'test buddy', argString: '-delay 12 -monkey cheese -particle']
+                        )]
+                ),
+                retry      : '1'
+        ]
+
+        service.frameworkService = Stub(FrameworkService) {
+            getServerUUID() >> null
+        }
+        when:
+        Execution e2 = service.createExecutionAndPrep(
+                params,
+                null
+        )
+
+        then:
+        e2 != null
+        e2.argString =~ resultPat
+
+        where:
+        argString                                             | resultPat
+        '-opt1 blah -opt2 ${DATE:yyyy-MM-dd}'                 | /-opt1 blah -opt2 \d{4}-\d{2}-\d{2}/
+        '-opt1 ${DATE+1:yyyy-MM-dd} -opt2 ${DATE:yyyy-MM-dd}' | /-opt1 \d{4}-\d{2}-\d{2} -opt2 \d{4}-\d{2}-\d{2}/
+    }
+    void "execute job as user"() {
+
+        given:
+        ScheduledExecution job = new ScheduledExecution(
+                jobName: 'blue',
+                project: 'AProject',
+                user:'test1',
+                groupPath: 'some/where',
+                description: 'a job',
+                argString: '-a b -c d',
+                workflow: new Workflow(
+                        keepgoing: true,
+                        commands: [new CommandExec(
+                                [adhocRemoteString: 'test buddy', argString: '-delay 12 -monkey cheese -particle']
+                        )]
+                ),
+                retry: '1'
+        )
+        job.save()
+        service.frameworkService = Stub(FrameworkService) {
+            getServerUUID() >> null
+            authorizeProjectJobAll(*_)>>true
+        }
+        service.scheduledExecutionService = Mock(ScheduledExecutionService)
+        service.configurationService=Stub(ConfigurationService){
+            isExecutionModeActive()>>true
+        }
+
+        def authContext = Mock(UserAndRolesAuthContext){
+            getUsername()>>'user1'
+        }
+        when:
+        def result = service.executeJob(job, authContext, 'test2', [:])
+
+        then:
+        1 * service.scheduledExecutionService.scheduleTempJob(job,'test2',authContext,_,[:],[:],0)>>{args->
+            args[3].id
+        }
+        result!=null
+        result.success
+        result.executionId!=null
+        result.name==job.jobName
+        result.execution!=null
+        result.executionId==result.execution.id
+        result.execution.user=='test2'
+
     }
 
     @Unroll
@@ -222,6 +386,7 @@ class ExecutionServiceSpec extends Specification {
         service.frameworkService = Mock(FrameworkService) {
             1 * filterNodeSet(null, 'AProject')
             1 * filterAuthorizedNodes(*_)
+            1 * getProjectGlobals(*_)
             0 * _(*_)
         }
 
@@ -241,6 +406,58 @@ class ExecutionServiceSpec extends Specification {
         newCtxt.dataContext['secureOption'] == ['test2': '']
         newCtxt.dataContext['option'] == ['test2': '']
         newCtxt.privateDataContext['option'] == ['test1': '']
+    }
+    def "createJobReferenceContext global vars"() {
+        given:
+        def context = ExecutionContextImpl.builder()
+                                          .
+                threadCount(1)
+                                          .
+                keepgoing(false)
+                                          .
+                dataContext(['option': ['monkey': 'wakeful'], 'secureOption': [:], 'job': ['execid': '123']])
+                                          .
+                privateDataContext(['option': [:],])
+                                          .
+                user('aUser')
+                                          .
+                build()
+        ScheduledExecution se = new ScheduledExecution(
+                jobName: 'blue',
+                project: 'AProject',
+                groupPath: 'some/where',
+                description: 'a job',
+                workflow: new Workflow(
+                        keepgoing: true,
+                        commands: [new CommandExec(
+                                [adhocRemoteString: 'test buddy', argString: '-delay 12 -monkey cheese -particle']
+                        )]
+                ),
+                )
+        null != se
+        null != se.save()
+
+        service.frameworkService = Mock(FrameworkService) {
+            1 * filterNodeSet(null, 'AProject')
+            1 * filterAuthorizedNodes(*_)
+            1 * getProjectGlobals(*_)>>['a':'b',c:'d']
+            0 * _(*_)
+        }
+
+        service.storageService = Mock(StorageService)
+        service.jobStateService = Mock(JobStateService)
+
+        when:
+
+        def newCtxt = service.createJobReferenceContext(
+                se,
+                context,
+                [] as String[],
+                null, null, null, null, null, false
+        )
+
+        then:
+        newCtxt.dataContext['globals'] == [a:'b',c:'d']
     }
 
     def "createJobReferenceContext secure opts default storage path values should be read from storage"() {
@@ -295,6 +512,7 @@ class ExecutionServiceSpec extends Specification {
         service.frameworkService = Mock(FrameworkService) {
             1 * filterNodeSet(null, 'AProject')
             1 * filterAuthorizedNodes(*_)
+            1 * getProjectGlobals(*_)
             0 * _(*_)
         }
 
@@ -367,6 +585,7 @@ class ExecutionServiceSpec extends Specification {
         service.frameworkService = Mock(FrameworkService) {
             1 * filterNodeSet(null, 'AProject')
             1 * filterAuthorizedNodes(*_)
+            1 * getProjectGlobals(*_)
             0 * _(*_)
         }
 
@@ -387,6 +606,78 @@ class ExecutionServiceSpec extends Specification {
         newCtxt.dataContext['secureOption'] == ['test2': 'zimbo']
         newCtxt.dataContext['option'] == ['test2': 'zimbo']
         newCtxt.privateDataContext['option'] == ['test1': 'phoenix']
+    }
+
+    def "Create execution context with global vars"() {
+        given:
+
+        service.frameworkService = Mock(FrameworkService) {
+            1 * filterNodeSet(null, 'testproj')
+            1 * filterAuthorizedNodes(*_)
+            1 * getProjectGlobals(*_) >> [a: 'b', c: 'd']
+            0 * _(*_)
+        }
+        service.storageService = Mock(StorageService) {
+            1 * storageTreeWithContext(_)
+        }
+        service.jobStateService = Mock(JobStateService) {
+            1 * jobServiceWithAuthContext(_)
+        }
+
+        Execution se = new Execution(
+                argString: "-test args",
+                user: "testuser",
+                project: "testproj",
+                loglevel: 'WARN',
+                doNodedispatch: false
+        )
+
+        when:
+        def val = service.createContext(se, null, null, null, null, null, null)
+        then:
+        val!=null
+        val.nodeSelector==null
+        val.frameworkProject=="testproj"
+        "testuser"==val.user
+        1==val.loglevel
+        !val.executionListener
+        val.dataContext.globals == [a:'b',c:'d']
+    }
+    def "Create execution context with charset"() {
+        given:
+
+        service.frameworkService = Mock(FrameworkService) {
+            1 * filterNodeSet(null, 'testproj')
+            1 * filterAuthorizedNodes(*_)
+            1 * getProjectGlobals(*_) >> [:]
+            0 * _(*_)
+        }
+        service.storageService = Mock(StorageService) {
+            1 * storageTreeWithContext(_)
+        }
+        service.jobStateService = Mock(JobStateService) {
+            1 * jobServiceWithAuthContext(_)
+        }
+
+        Execution se = new Execution(
+                argString: "-test args",
+                user: "testuser",
+                project: "testproj",
+                loglevel: 'WARN',
+                doNodedispatch: false
+        )
+
+        when:
+        def val = service.createContext(se, null, null, null, null, null, null,null,null,null,charset)
+        then:
+        val!=null
+        val.charsetEncoding==charset
+
+        where:
+        charset      | _
+        null         | _
+        'UTF-8'      | _
+        'ISO-8859-1' | _
     }
 
     def "delete execution unauthorized"() {
